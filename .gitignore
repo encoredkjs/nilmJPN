@@ -1,0 +1,12 @@
+.Rproj.user
+.Rhistory
+.RData
+*.png
+NILM1Hz_*.tar.gz
+encored*.tar.gz
+*.Rproj
+.Rbuildignore
+.Apple*
+*.Rcheck*
+.DS_Store
+**/.Apple*
