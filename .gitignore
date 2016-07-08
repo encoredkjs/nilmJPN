@@ -2,6 +2,9 @@
 .Rhistory
 .RData
 *.png
+*.Rmd
+*.html
+*.rds
 NILM1Hz_*.tar.gz
 encored*.tar.gz
 *.Rproj
@@ -10,3 +13,5 @@ encored*.tar.gz
 *.Rcheck*
 .DS_Store
 **/.Apple*
+exeCooker.R
+exeWasher.R
