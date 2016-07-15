@@ -28,9 +28,9 @@ generate.PatternScan.meta.ricecooker_JPN <- function (data, Hz, eff_size = 5, pe
                          flag = c( 0,  2,  2,  1,  1,  1,  2,  1,   1))
   DB_toleranceSec <- 0.4
 
-  majorSig_info <- parallel_majorSig_search( patterns = e_pattern, min_watt = major_min_watt, max_watt = major_max_watt, group_periodicity = periodicity, group_quantProb = quantileProb, 
-                                             group_searchIter = search_iter, group_medSec_min = major_medSec_min, group_medSec_max = major_medSec_max, effective_size = eff_size, 
-                                             lump_timeGapThres = major_lumpGap, timeTolerance = DB_toleranceSec, DB_majorSig = DB_major)
+  majorSig_info <- majorSig_search( patterns = e_pattern, min_watt = major_min_watt, max_watt = major_max_watt, group_periodicity = periodicity, group_quantProb = quantileProb, 
+                                    group_searchIter = search_iter, group_medSec_min = major_medSec_min, group_medSec_max = major_medSec_max, effective_size = eff_size, 
+                                    lump_timeGapThres = major_lumpGap, timeTolerance = DB_toleranceSec, DB_majorSig = DB_major)
   
   if( length(majorSig_info) == 0) {
     print('Detection has failed - no info for the major signal')
@@ -45,15 +45,27 @@ generate.PatternScan.meta.ricecooker_JPN <- function (data, Hz, eff_size = 5, pe
   min_cookOn <- 5 * 60
   ap_ignoreThres <- 5 
   
+  annihilation_cookNumThres <- 2
+  annihilation_spanSec <- 3*3600
+  annihilation_thresProb <- 0.9
+  annihilation_apMinThres <- 50
+  annihilation_apMaxThres <- major_max_watt # set to 1600
+  annihilation_particleLumpSize <- 8
+  annihilation_coverageProb <- 0.75
+
   validInfo <- sigOrchestration_riceCooker(data, Hz, answer.log, major_SigInfo = majorSig_info, major_DBInfo = DB_major, thresTime = thres_timeDuration, 
-                                           range_energyEsti = proper_cookTime, min_usageTime = min_cookOn, min_apThres = ap_ignoreThres)
-  
+                                           range_energyEsti = proper_cookTime, min_usageTime = min_cookOn, min_apThres = ap_ignoreThres, annihilation_cookNumThres, annihilation_pattern = e_pattern, 
+                                           annihilation_spanSec, annihilation_apMinThres, annihilation_apMaxThres, annihilation_searchIter = search_iter, annihilation_effSize = eff_size, annihilation_medSec_min = major_medSec_min,
+                                           annihilation_medSec_max = major_medSec_max, annihilation_thresProb, annihilation_coverageProb, lump_timeGapThres = major_lumpGap, annihilation_particleLumpSize)
+    
   return(validInfo)
 
 
   
 
   
+  annihilation_cookNumThres
+  annihilation_coverageProb
   
   
     cooking.max_t.sec <- 40*60
@@ -186,8 +198,8 @@ generate.PatternScan.meta.ricecooker_JPN <- function (data, Hz, eff_size = 5, pe
   
 }
 
-parallel_majorSig_search <- function(patterns, min_watt, max_watt, group_periodicity, group_quantProb, group_searchIter, group_medSec_min,
-                                     group_medSec_max, effective_size, lump_timeGapThres, timeTolerance, DB_majorSig){
+majorSig_search <- function(patterns, min_watt, max_watt, group_periodicity, group_quantProb, group_searchIter, group_medSec_min,
+                            group_medSec_max, effective_size, lump_timeGapThres, timeTolerance, DB_majorSig){
   
   # search periodicity in signature level
   major_pattern <- patterns %>% filter(h2 >= -max_watt) %>% filter(h2 <= -min_watt)
@@ -373,8 +385,10 @@ detectGroup_riceCooker <- function(data, resolution, main.g.name, sub.g.name, p_
   
 }
 
-sigOrchestration_riceCooker <- function(data, Hz, answer.log, major_SigInfo, major_DBInfo, thresTime, range_energyEsti, min_usageTime, min_apThres){
-  
+sigOrchestration_riceCooker <- function(data, Hz, answer.log, major_SigInfo, major_DBInfo, thresTime, range_energyEsti, min_usageTime, min_apThres, annihilation_cookNumThres, annihilation_pattern,
+                                        annihilation_spanSec, annihilation_apMinThres, annihilation_apMaxThres, annihilation_searchIter, annihilation_effSize, annihilation_medSec_min, 
+                                        annihilation_medSec_max, annihilation_thresProb, annihilation_coverageProb, lump_timeGapThres, annihilation_particleLumpSize){
+
   # possible properties of signals for the orchestration
   # 1) flag in DB 1) time duration # 1) active power # 1) sum of signatures # 1) number of lumps
   
@@ -436,6 +450,7 @@ sigOrchestration_riceCooker <- function(data, Hz, answer.log, major_SigInfo, maj
       
       # to split the cook signals into two categories (later in consumption output)
       cookSummary <- major_SigInfo$candSummary[[ID_cookSig]]
+      cookActLog <- major_SigInfo$candPattern[[ID_cookSig]]
       log_cookEnergy <-energyEsti[[tmp_ID]]
     }
   }
@@ -444,19 +459,93 @@ sigOrchestration_riceCooker <- function(data, Hz, answer.log, major_SigInfo, maj
   ### 3-1] choose candidates
   ID_warmSig <- 0
   if(!any(sigClass == 1)) {
-    considerCand <- which(sigClass == 0)
-    considerCand <- considerCand[considerCand != ID_cookSig]
+    # try 1] prototype
+    # considerCand <- which(sigClass == 0)
+    # considerCand <- considerCand[considerCand != ID_cookSig]
+    # 
+    # if(length(considerCand) == 0){ # in case of no possible candidate
+    #   print('no warming candidates in major signals')
+    #   longCand <- NULL
+    # } else { 
+    #   print('using residual signals for warming candidates')
+    #   longCand <- considerCand
+    # }
     
-    if(length(considerCand) == 0){
-      print('no warming candidates in major signals')
+    # try 2] conservative approach, i.e., w/o reusing shortCand
+    # print('no warming candidates in major signals')
+    # longCand <- NULL
+    
+    # try 3] general signal investigation  
+    # function name would be 'broadSearch_warmSig()'
+    if( (ID_cookSig != 0) & (nrow(cookSummary) >= annihilation_cookNumThres)){
+      print("start annihilation..")
+      ### reduce pattern number
+      annihilation_pattern <- annihilation_pattern %>% filter(h2 < -annihilation_apMinThres, h2 > -annihilation_apMaxThres) 
+      
+      ### obtatin particle
+      tmp_period <- cookSummary %>% mutate(startTime = lump.end, endTime = lump.end + dseconds(annihilation_spanSec) ) %>% select(startTime, endTime)
+      particle_info <- mapply( function(sTime,eTime, Idx) return(annihilation_pattern %>% filter( end.timestamp %within% (sTime %--% eTime) ) %>% 
+                                                            rowwise() %>% mutate(particlePosition = as.numeric(end.timestamp) - as.numeric(sTime), lumpIdx = Idx ) ), 
+                               tmp_period$startTime, tmp_period$endTime, seq(nrow(tmp_period)), SIMPLIFY = FALSE)
+      
+      ### obtain anti-particle
+      tmp_period <- cookSummary %>% mutate(endTime = lump.start, startTime = lump.start - dseconds(annihilation_spanSec)) %>% select(startTime, endTime)
+      antiParticle_info <- mapply( function(sTime,eTime, Idx) return(annihilation_pattern %>% filter( end.timestamp %within% (sTime %--% eTime) ) %>% 
+                                                                rowwise() %>% mutate(particlePosition = as.numeric(end.timestamp) - as.numeric(eTime), lumpIdx = Idx) ), 
+                                   tmp_period$startTime, tmp_period$endTime, seq(nrow(tmp_period)), SIMPLIFY = FALSE)
+      
+      ### merge
+      entireParticle <- bind_rows(particle_info, antiParticle_info) %>% arrange(start.timestamp)
+      annihilationInfo <- detectGroup_pairAnnihilation(data = entireParticle, resolution = annihilation_searchIter, main.g.name = "delta", sub.g.name = "sub.delta", property.name = "particlePosition", 
+                                                       a_factor = annihilation_thresProb, med.time_min = annihilation_medSec_min, med.time_max = annihilation_medSec_max, group_size = annihilation_effSize)
+
+      if(length(annihilationInfo) != 0){
+       
+        print("groups with annihilation:")
+        group_list <- annihilationInfo[[length(annihilationInfo)]] %>% arrange(desc(sum))
+        print(group_list)
+        refinedAnnihilationLog <- chooseRefinedCand(annihilationInfo, entireCookLump = nrow(cookSummary), entirePattern = annihilation_pattern, 
+                                                    annihilation_particleLumpSize, annihilation_coverageProb)
+        
+        if(nrow(refinedAnnihilationLog) != 0) {
+          
+          # remove cook signal
+          compare_cookLog <- cookActLog %>% ungroup() %>% select(start.idx, end.idx, start.timestamp, end.timestamp)
+          compare_refinedLog <- refinedAnnihilationLog %>% select(start.idx, end.idx, start.timestamp, end.timestamp)
+          
+          refined_warmLog <- dplyr::setdiff(compare_refinedLog, compare_cookLog)
+          
+          # consider lump
+          if(nrow(refined_warmLog) != 0) {
+            
+            # split the chosen rows into several lumps depending on time gap
+            splitInterval <- cumsum( c(TRUE, difftime( tail(refined_warmLog$start.timestamp,-1),
+                                                       head(refined_warmLog$start.timestamp,-1), units='secs') >= lump_timeGapThres))
+            splitLumps <- bind_cols(refined_warmLog, data.frame(lumpIdx = splitInterval))
+            # splitLumps <- split.data.frame( chosen_rows, splitInterval) %>% bind_rows(.id = 'lumpIdx')
+            
+            # summarize information
+            lumpSummary <- ddply(splitLumps, .(lumpIdx), summarize, sum = length(start.timestamp), lump.start = min(start.timestamp), lump.end = max(end.timestamp), lump.duration = as.numeric(lump.end) - as.numeric(lump.start),
+                                 min.t = min(diff(as.numeric(start.timestamp))), med.t = median(diff(as.numeric(start.timestamp))), max.t = max(diff(as.numeric(start.timestamp))), min.med.rate2 = quantile(diff(as.numeric(start.timestamp)), .05)/med.t)
+            
+            lumpSummary <- lumpSummary %>% filter(sum >= annihilation_particleLumpSize)
+            refined_warmLog <- splitLumps %>% filter( lumpIdx %in% lumpSummary$lumpIdx)
+            
+            if(nrow(refined_warmLog) != 0){
+              ID_warmSig <- length(sigClass) + 1
+              # energy estimation (w/ original pattern log)
+              warmEnergy_Info <- energyEstimation_caseWarm(data, Hz, pattern = refined_warmLog, thres = min_apThres)
+            }
+          }
+        }
+      }
       longCand <- NULL
-    } else { # conservative approach
-      # print('using residual signals for warming candidates')
-      # longCand <- considerCand
+
+    } else {
       print('no warming candidates in major signals')
       longCand <- NULL
     }
-    
+
   } else { # There exist long signals
     print('using proper long signals for warming candidates')
     longCand <- which(sigClass == 1)
@@ -620,6 +709,197 @@ energyEstimation_caseWarm <- function(data, Hz, pattern, thres){
   
   return(data.frame(watt = wattResult, sec = med_sec) )
 }
+
+detectGroup_pairAnnihilation <- function(data, resolution, main.g.name, sub.g.name, property.name, a_factor, q_factor = .05, med.time_min, med.time_max, group_size){
+
+  findGaps <- function(x,n){
+    x <- sort(x)
+    x.diff <- data.frame( val = diff(x), idx = 1:(length(x)-1) )
+    wall.idx <- x.diff$idx[ order( x.diff$val, decreasing=T ) ][1:n] # choose first N gaps
+    result <- sapply( wall.idx, function(i) mean(x[i+c(0,1)]))
+    return( sort(result) )
+  }
+
+  summarize_particleInfo <- function( groupInfo, colName){
+    
+    tsDiff <- diff(as.numeric(sort(groupInfo$start.timestamp)))
+    colParticle <- groupInfo[,colName]
+    data.frame( 
+      'sum' = length(groupInfo$start.timestamp), 
+      'min.t'  = min(tsDiff),
+      'min.t2' = quantile(tsDiff, q_factor),
+      'med.t'  = median(tsDiff),
+      'lost.sig.num' = sum( pmax( round(tsDiff / median(tsDiff)) -1 ,0)),
+      'anti.particle' = nrow(colParticle %>% filter(. < 0)),
+      'particle' = nrow(colParticle %>% filter(. >= 0)),
+      'lump.coverage' = length(unique(groupInfo$lumpIdx)),
+      'particle.min.t2' = quantile(unlist(colParticle), q_factor),
+      'particle.max.t2' = quantile(unlist(colParticle), 1-q_factor)
+      )
+  }
+  
+  logSummary <- list()
+  logDetail <- list()
+  o.list <- data
+  
+  r_idx <- 1
+  iter_idx <- 1
+  while( iter_idx <= resolution ){
+    
+    if ( nrow(o.list) +1 <= r_idx ){
+      print("stop resolution increment for searcing groups")
+      break
+    }
+    
+    xValue    <- o.list[,main.g.name] %>% unlist(use.names = FALSE)
+    yValue    <- o.list[, sub.g.name] %>% unlist(use.names = FALSE)
+    o.list$xDivision <- findInterval( xValue, findGaps( xValue, r_idx ) )
+    o.list$yDivision <- findInterval( yValue, findGaps( yValue, r_idx ) )
+    
+    removeData <- o.list %>% 
+      group_by( xDivision, yDivision ) %>%
+      filter( n() < group_size )
+    
+    o.list <- o.list %>% 
+      group_by( xDivision, yDivision ) %>%
+      filter( n() >= group_size )
+    
+    r_idx <- pmax( r_idx - length(group_size(removeData)), 1 )
+    
+    if (nrow(o.list) > 0){ # in case 'o.list' is empty
+      
+      group.info <- o.list %>%
+        do( summarize_particleInfo(., colName = property.name) ) %>%
+        mutate( min.med.rate  = min.t/med.t, 
+                min.med.rate2 = min.t2/med.t, 
+                particle.prob = particle/sum)
+      
+      group.info <- merge( group.info, o.list %>% 
+                             summarise_each_( funs(median), c('h1','delta','sub.delta') )) %>%
+        dplyr::rename( med.h1 = h1, med.d = delta, med.sub.d = sub.delta ) %>%
+        mutate( lost.sig.rate =  lost.sig.num*100/(sum+lost.sig.num) )
+    }
+    
+    ### effective group (conservative search by default)
+    if (nrow(group.info) > 0){
+      
+      eff_group.info <- group.info %>%
+        filter( med.t >= med.time_min ) %>%
+        filter( med.t <= med.time_max ) %>%
+        filter( particle.prob >= a_factor ) %>%
+        filter( xDivision != 0 )
+      
+      if( nrow(eff_group.info) > 0 ){
+        
+        logSummary[[length(logSummary)+1]] <- eff_group.info
+        
+        for(g_idx in 1:nrow(eff_group.info) ){
+          logDetail[[length(logDetail) +1]] <- o.list %>%
+            filter( xDivision == eff_group.info$xDivision[g_idx] & yDivision == eff_group.info$yDivision[g_idx] ) 
+          
+          o.list <- o.list %>%
+            filter( !(xDivision == eff_group.info$xDivision[g_idx] & yDivision == eff_group.info$yDivision[g_idx]) ) 
+        }
+      }
+      
+      # index increment for while loop
+      r_idx <- pmax( r_idx - nrow(eff_group.info) + 1, 1 )
+    } else {
+      r_idx <- r_idx + 1
+    }
+    iter_idx <- iter_idx + 1
+    
+  }
+  
+  # return information
+  if (length(logSummary) != 0) {
+    logDetail[[length(logDetail) +1]] <- rbind.fill(logSummary)
+    return(logDetail)
+  } else {
+    return(list())
+  }
+  
+}
+
+chooseRefinedCand <- function(annihilationInfo, entireCookLump, entirePattern, annihilation_particleLumpSize, annihilation_coverageProb){
+
+  antiParticle_reduction <- function(df, summary, group){
+    # step 1] adjust h2
+    if(df$delta < summary$med.d) refined_group <- group %>% filter(delta > df$delta) else refined_group <- group %>% filter(delta < df$delta)
+    # step 2] adjust sub delta
+    if(df$sub.delta < summary$med.sub.d) refined_group <- refined_group %>% filter(sub.delta > df$sub.delta) else refined_group <- refined_group %>% filter(sub.delta < df$sub.delta)
+    
+    return(refined_group)
+  }
+    
+  compute_removingCost <- function(df, summary, group){
+    
+    refined_group <- antiParticle_reduction(df, summary, group)
+
+    # step 3] yield result
+    refinedParticleNum <- refined_group %>% filter(particlePosition >= 0) %>% nrow(.)
+    removedParticleNum <- summary$particle - refinedParticleNum
+    refinedAntiParticleNum <- refined_group %>% filter(particlePosition < 0) %>% nrow(.)
+    removedAntiParticleNum <- summary$anti.particle - refinedAntiParticleNum
+
+    return(data.frame(removedParticle = removedParticleNum, removedAntiParticle = removedAntiParticleNum, removingCost = removedParticleNum/removedAntiParticleNum))
+  }
+  
+  eff_lumpCoverage <- sapply(seq(length(annihilationInfo)-1), function(x) { return(annihilationInfo[[x]] %>% filter(particlePosition >= 0) %>% group_by(lumpIdx) %>% 
+                                                                            summarise(particleSum = n()) %>% filter(particleSum >= annihilation_particleLumpSize) %>% nrow(.)) })
+  
+  list_validGroup <- bind_cols(annihilationInfo[[length(annihilationInfo)]], data.frame(orderNum = seq( length(annihilationInfo)-1 ), eff.lump.coverage = eff_lumpCoverage )) %>%  
+                     filter(eff.lump.coverage >= (entireCookLump* annihilation_coverageProb))
+
+  if(nrow(list_validGroup) == 0){
+    print("no valid group from annihilation")
+    return(list_validGroup)
+  }
+
+  # step 1] remove anti particles by assessing cost
+  improvedResult <- lapply(seq(nrow(list_validGroup)), function(candIdx){
+    
+    chosen_summary <- list_validGroup[candIdx, ]
+    chosen_group <- annihilationInfo[[ chosen_summary$orderNum ]]
+
+    chosen_antiParticle <- chosen_group %>% filter(particlePosition < 0)
+    if(nrow(chosen_antiParticle) >= annihilation_particleLumpSize){
+      thres_removingCost <- chosen_summary$particle / chosen_summary$anti.particle
+      antiParticle_chkMetric <- chosen_antiParticle %>% rowwise() %>% do( compute_removingCost(df = ., summary = chosen_summary, group = chosen_group)) %>%
+                                bind_cols(chosen_antiParticle, .) %>% arrange(removingCost) %>% .[1,]
+      
+      if(antiParticle_chkMetric$removingCost <= thres_removingCost){
+        cat("anti particle elimination at ", candIdx, "\n")
+        print(antiParticle_chkMetric)
+        return(antiParticle_reduction(df = antiParticle_chkMetric, summary = chosen_summary, group = chosen_group))
+      } 
+    }
+    return(chosen_group)
+  })
+  
+  # step 2] choose one list
+  chosenResult <- sapply(improvedResult, function(x) return(nrow(x))) %>% which.max(.)
+  
+  # step 3] particle extension
+  chosenInput <- improvedResult[[chosenResult]] %>% .[!duplicated(.$start.idx), ] %>% arrange(start.idx)
+  extendedPattern <- entirePattern %>% filter(delta >= min(chosenInput$delta), delta <= max(chosenInput$delta), 
+                                              sub.delta >= min(chosenInput$sub.delta), sub.delta <= max(chosenInput$sub.delta) )
+  
+  return(extendedPattern)
+
+}
+
+  
+  # print("major groups:")
+  # group_list <- cbind(major_group_info[[length(major_group_info)]], data.frame(orderNum = seq( length(major_group_info)-1 ) )) %>% arrange(desc(sum))
+  # print(group_list)
+  # 
+  # # examine candidates 1) lapply for each group; 2) lapply for each DB time
+  # # for ( candIdx in 1:nrow(group_list) ) { print(candIdx)
+  # candResult <- lapply(seq(nrow(group_list)), function(candIdx){
+  #   chosen_group <- major_group_info[[ group_list$orderNum[candIdx] ]] %>% arrange(start.timestamp)
+  #   time_diff <- difftime( tail(chosen_group$start.timestamp,-1), head(chosen_group$start.timestamp,-1), units='secs')
+  #   group_detail <- lapply(DB_majorSig$time, function(DB_time){ 
 
 
 # cookSigSearch_15Hz <- function(data, end.pattern, min_watt, max_watt, min_t.sec, max_t.sec, min_fluc.num){

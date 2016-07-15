@@ -5,6 +5,7 @@
 *.Rmd
 *.html
 *.rds
+*.pdf
 NILM1Hz_*.tar.gz
 encored*.tar.gz
 *.Rproj
