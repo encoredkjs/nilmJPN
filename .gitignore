@@ -15,5 +15,4 @@ encored*.tar.gz
 .DS_Store
 **/.Apple*
 exeCooker.R
-exeWasher.R
-[July]exeWasher.R
+*exeWasher.R
