@@ -28,9 +28,9 @@ generate.PatternScan.meta.ricecooker_JPN <- function (data, Hz, eff_size = 5, pe
                          flag = c( 0,  2,  2,  1,  1,  1,  2,  1,   1))
   DB_toleranceSec <- 0.4
 
-  majorSig_info <- majorSig_search( patterns = e_pattern, min_watt = major_min_watt, max_watt = major_max_watt, group_periodicity = periodicity, group_quantProb = quantileProb, 
-                                    group_searchIter = search_iter, group_medSec_min = major_medSec_min, group_medSec_max = major_medSec_max, effective_size = eff_size, 
-                                    lump_timeGapThres = major_lumpGap, timeTolerance = DB_toleranceSec, DB_majorSig = DB_major)
+  majorSig_info <- sigSearch_majorCase( patterns = e_pattern, min_watt = major_min_watt, max_watt = major_max_watt, group_periodicity = periodicity, group_quantProb = quantileProb, 
+                                        group_searchIter = search_iter, group_medSec_min = major_medSec_min, group_medSec_max = major_medSec_max, effective_size = eff_size, 
+                                        lump_timeGapThres = major_lumpGap, timeTolerance = DB_toleranceSec, DB_majorSig = DB_major)
   
   if( length(majorSig_info) == 0) {
     print('Detection has failed - no info for the major signal')
@@ -201,8 +201,8 @@ generate.PatternScan.meta.ricecooker_JPN <- function (data, Hz, eff_size = 5, pe
   
 }
 
-majorSig_search <- function(patterns, min_watt, max_watt, group_periodicity, group_quantProb, group_searchIter, group_medSec_min,
-                            group_medSec_max, effective_size, lump_timeGapThres, timeTolerance, DB_majorSig){
+sigSearch_majorCase <- function(patterns, min_watt, max_watt, group_periodicity, group_quantProb, group_searchIter, group_medSec_min,
+                            group_medSec_max, effective_size, lump_timeGapThres, timeTolerance, DB_majorSig, USE.DB = TRUE){
   
   # search periodicity in signature level
   major_pattern <- patterns %>% filter(h2 >= -max_watt) %>% filter(h2 <= -min_watt)
@@ -224,6 +224,8 @@ majorSig_search <- function(patterns, min_watt, max_watt, group_periodicity, gro
   print("major groups:")
   group_list <- cbind(major_group_info[[length(major_group_info)]], data.frame(orderNum = seq( length(major_group_info)-1 ) )) %>% arrange(desc(sum))
   print(group_list)
+  
+  if(!USE.DB) return(major_group_info)
   
   # examine candidates 1) lapply for each group; 2) lapply for each DB time
   # for ( candIdx in 1:nrow(group_list) ) { print(candIdx)
@@ -420,12 +422,11 @@ sigOrchestration_riceCooker <- function(data, Hz, answer.log, major_SigInfo, maj
     # details of the energy consumption
     energyEsti <- lapply(shortCand, function(sigIdx){
       lumpSummary <- major_SigInfo$candSummary[[sigIdx]]
-      lumpLog <- major_SigInfo$candPattern[[sigIdx]] %>% mutate( ap.thres = (data$active_power[start.idx] + data$active_power[end.idx]) / 2 )
+      lumpLog <- major_SigInfo$candPattern[[sigIdx]] 
       
       estiOutput <- ldply(seq(nrow(lumpSummary)), function(rowIdx){
         tmp_lumpIdx <- lumpSummary$lumpIdx[rowIdx]
         tmp_LumpPattern <- lumpLog %>% filter(lumpIdx == tmp_lumpIdx)
-        # relatively old function
         return(energyEstimation_caseCook(data, Hz, tmp_LumpPattern, range_energyEsti, min_usageTime))
       }) # %>% ldply(., .id= NULL)
       
@@ -539,8 +540,9 @@ sigOrchestration_riceCooker <- function(data, Hz, answer.log, major_SigInfo, maj
             # splitLumps <- split.data.frame( chosen_rows, splitInterval) %>% bind_rows(.id = 'lumpIdx')
             
             # summarize information
-            lumpSummary <- ddply(splitLumps, .(lumpIdx), summarize, sum = length(start.timestamp), lump.start = min(start.timestamp), lump.end = max(end.timestamp), lump.duration = as.numeric(lump.end) - as.numeric(lump.start),
-                                 min.t = min(diff(as.numeric(start.timestamp))), med.t = median(diff(as.numeric(start.timestamp))), max.t = max(diff(as.numeric(start.timestamp))), min.med.rate2 = quantile(diff(as.numeric(start.timestamp)), .05)/med.t)
+            lumpSummary <- ddply(splitLumps, .(lumpIdx), summarize, sum = length(start.timestamp))
+            # lumpSummary <- ddply(splitLumps, .(lumpIdx), summarize, sum = length(start.timestamp), lump.start = min(start.timestamp), lump.end = max(end.timestamp), lump.duration = as.numeric(lump.end) - as.numeric(lump.start),
+            #                      min.t = min(diff(as.numeric(start.timestamp))), med.t = median(diff(as.numeric(start.timestamp))), max.t = max(diff(as.numeric(start.timestamp))), min.med.rate2 = quantile(diff(as.numeric(start.timestamp)), .05)/med.t)
             
             lumpSummary <- lumpSummary %>% filter(sum >= annihilation_particleLumpSize)
             refined_warmLog <- splitLumps %>% filter( lumpIdx %in% lumpSummary$lumpIdx)
@@ -586,7 +588,7 @@ sigOrchestration_riceCooker <- function(data, Hz, answer.log, major_SigInfo, maj
     idx_chosenCand <- which.max(sapply(refinedLog, nrow))
     ID_warmSig <- longCand[idx_chosenCand]
     refined_warmLog <- refinedLog[[idx_chosenCand]]
-    warmLumpNum <- nrow(lump_timeIdx)
+    warmLumpNum <- nrow(major_SigInfo$candSummary[[ID_warmSig]])
     # energy estimation (w/ original pattern log)
     warmEnergy_Info <- energyEstimation_caseWarm(data, Hz, pattern = major_SigInfo$candPattern[[ID_warmSig]], thres = min_apThres)
   }
@@ -657,11 +659,12 @@ sigOrchestration_riceCooker <- function(data, Hz, answer.log, major_SigInfo, maj
 energyEstimation_caseCook <- function(data, Hz, end.pattern, max_t.sec, thres_usageSec){
   
   # start and end point of a lump
+  end.pattern <- end.pattern %>% mutate( ap.thres = (data$active_power[start.idx] + data$active_power[end.idx]) / 2 )
   cookEdgeInfo <- list()
   cookEdgeInfo[[1]] <- head(end.pattern, 1)
   cookEdgeInfo[[2]] <- tail(end.pattern, 1)
   middleTime <- cookEdgeInfo[[1]]$end.timestamp + dseconds((as.numeric(cookEdgeInfo[[2]]$end.timestamp) - as.numeric(cookEdgeInfo[[1]]$end.timestamp))/2)
-  
+
   # find the amount of energy (with its proper position)
   # for exmaple: x <- cookEdgeInfo[[2]]
   energyInfo <- ldply(cookEdgeInfo, function(x){
@@ -933,7 +936,7 @@ forceRiceCooker_jp <- function (data, prior_meta = NULL, Hz = 10){
   annihilation_thresProb <- 0.9
   annihilation_apMinThres <- 50
   annihilation_apMaxThres <- major_max_watt # set to 1600
-  annihilation_particleLumpSize <- 8
+  annihilation_particleLumpSize <- 8 # might be larger than eff_size
   annihilation_coverageProb <- 0.75
   
   #########################################################################
@@ -941,7 +944,7 @@ forceRiceCooker_jp <- function (data, prior_meta = NULL, Hz = 10){
   e_pattern <- DetectPattern_1Hz_new(data, position = "end", main_type = "active", sub_type = "reactive", useConsistencyFlag = F)
   #########################################################################
   
-  majorSig_info <- majorSig_search( patterns = e_pattern, min_watt = major_min_watt, max_watt = major_max_watt, group_periodicity = periodicity, group_quantProb = quantileProb, 
+  majorSig_info <- sigSearch_majorCase( patterns = e_pattern, min_watt = major_min_watt, max_watt = major_max_watt, group_periodicity = periodicity, group_quantProb = quantileProb, 
                                     group_searchIter = search_iter, group_medSec_min = major_medSec_min, group_medSec_max = major_medSec_max, effective_size = eff_size, 
                                     lump_timeGapThres = major_lumpGap, timeTolerance = DB_toleranceSec, DB_majorSig = DB_major)
   
@@ -956,7 +959,11 @@ forceRiceCooker_jp <- function (data, prior_meta = NULL, Hz = 10){
   }
   
   # parameter setup
-  validMeta$param <- c("eff_size" = eff_size, "DB_toleranceSec" = DB_toleranceSec, "major_lumpGap" = major_lumpGap)
+  validMeta$param <- c("Hz" = Hz, "eff_size" = eff_size, "periodicity" = periodicity, "search_iter" = search_iter, "quantileProb" = quantileProb, "major_min_watt" = major_min_watt,
+                       "major_max_watt" = major_max_watt, "major_medSec_min" = major_medSec_min, "major_medSec_max" = major_medSec_max, "DB_toleranceSec" = DB_toleranceSec, 
+                       "major_lumpGap" = major_lumpGap, "proper_cookTime" = proper_cookTime, "min_cookOn" = min_cookOn, "annihilation_particleLumpSize" = annihilation_particleLumpSize)
+  
+  validMeta$DBTime <- DB_major$time
   
   # compute reliability
   metaReliability <- 0.2
@@ -967,7 +974,7 @@ forceRiceCooker_jp <- function (data, prior_meta = NULL, Hz = 10){
   return(validMeta)
 }
   
-predict.forceRiceCooker_jp <- function (object, meta, apMargin = 50, rpMargin = 20, flucMargin = 5, usage_powerAdjust = 2) {
+predict.forceRiceCooker_jp <- function (object, meta, apMargin = 50, rpMargin = 20, usage_powerAdjust = 2) {
   data <- object
 
   # options(scipen = 15)
@@ -975,25 +982,50 @@ predict.forceRiceCooker_jp <- function (object, meta, apMargin = 50, rpMargin = 
                                             floor_date(max(data$timestamp), unit = "second"), 'secs'))
   answer.log <- data.frame( answer.log, p= rep(0,nrow(answer.log)), q= rep(0,nrow(answer.log)))
   cookCnt <- 0
+  cookLog_forAnnihilation <- NULL
   
   if(length(meta) == 0) return(list(usage = answer.log, confidence = 0, count = cookCnt, samplingRate = 1.))
   
   # parameters
   existCook <- meta$general[["Cook"]]
   existWarm <- meta$general[["Warm"]]
+  metaHz <- meta$param[["Hz"]]
   timeTolerance <- meta$param[["DB_toleranceSec"]]
   major_lumpGap <- meta$param[["major_lumpGap"]]
   eff_size <- meta$param[["eff_size"]]
-
   
   #########################################################################
   ### DetectPattern_1Hz_new:: cowork with SJLEE
   e_pattern <- DetectPattern_1Hz_new(data, position = "end", main_type = "active", sub_type = "reactive", useConsistencyFlag = F)
   #########################################################################
   
+
+  # support detection
+  if(existCook || existWarm){
+    
+    periodicity <- meta$param[["periodicity"]]
+    search_iter <- meta$param[["search_iter"]]
+    quantileProb <- meta$param[["quantileProb"]]
+    major_min_watt <- meta$param[["major_min_watt"]]  
+    major_max_watt <- meta$param[["major_max_watt"]]
+    major_medSec_min <- meta$param[["major_medSec_min"]]
+    major_medSec_max <- meta$param[["major_medSec_max"]]
+    DB_majorSig <- data.frame(time = meta$DBTime)
+    
+    sigGroupInfo <- sigSearch_majorCase( patterns = e_pattern, min_watt = major_min_watt, max_watt = major_max_watt, group_periodicity = periodicity, group_quantProb = quantileProb, 
+                                         group_searchIter = search_iter, group_medSec_min = major_medSec_min, group_medSec_max = major_medSec_max, effective_size = eff_size, 
+                                         lump_timeGapThres = major_lumpGap, timeTolerance, DB_majorSig, USE.DB = FALSE)
+  }
+
   # cook signal search
   if(existCook){
     cook_DBTime <- meta$cook[["DB_TimeSec"]]
+    cook_minTimeON <- meta$param[["min_cookOn"]]
+    cook_usageStartTime <- meta$cook[["usage_startTime"]]
+    cook_usageEndTime <- meta$cook[["usage_endTime"]]
+    cook_usageWhON <- meta$cook[["usage_whON"]]
+    # cook_usageSecON <- meta$cook[["usage_secON"]]
+    # cook_usageApON <- meta$cook[["usage_apON"]]
     
     # set reduce
     cookCandLog <- e_pattern %>% filter( h2 >= meta$cook[["min_ap.h2"]]-apMargin, h2 <= meta$cook[["max_ap.h2"]]+apMargin, 
@@ -1002,16 +1034,22 @@ predict.forceRiceCooker_jp <- function (object, meta, apMargin = 50, rpMargin = 
     if (nrow(cookCandLog) >= 2){
       # check time gap for each signal  
       timeGap <- difftime( tail(cookCandLog$start.timestamp,-1), head(cookCandLog$start.timestamp,-1), units='secs')
-      GapLen <- length(timeGap)
-      Gap_cumSum <- cumsum(as.numeric(timeGap))
+
+      ### cook Log processing
+      # option 1] skip obstacle, i.e., foreseeing (to refine)
+      # GapLen <- length(timeGap)
+      # Gap_cumSum <- cumsum(as.numeric(timeGap))
+      # chosenCandIdx <- sapply(seq(GapLen), function(x) {
+      #   if(x == 1) tmp_Gap <- Gap_cumSum[seq(x, GapLen)] else tmp_Gap <- (Gap_cumSum[seq(x, GapLen)] - Gap_cumSum[x-1])
+      #   checkCumTime <- ((cook_DBTime+timeTolerance) >= tmp_Gap) & ((cook_DBTime-timeTolerance) <= tmp_Gap)
+      #   if(any(checkCumTime)) return(c(x, which(checkCumTime)+x )) else return(NULL)
+      # }, simplify = FALSE)
+      # chosenCandIdx <- unique(unlist(chosenCandIdx))
       
-      # skip obstacle
-      chosenCandIdx <- sapply(seq(GapLen), function(x) {
-        if(x == 1) tmp_Gap <- Gap_cumSum[seq(x, GapLen)] else tmp_Gap <- (Gap_cumSum[seq(x, GapLen)] - Gap_cumSum[x-1])
-        checkCumTime <- ((cook_DBTime+timeTolerance) >= tmp_Gap) & ((cook_DBTime-timeTolerance) <= tmp_Gap)
-        if(any(checkCumTime)) return(c(x, which(checkCumTime)+x )) else return(NULL)
-      }, simplify = FALSE)
-      chosenCandIdx <- unique(unlist(chosenCandIdx))
+      # option 2] look only adjacent signal
+      chosenCandIdx <- which( ( (cook_DBTime-timeTolerance) <= timeGap) & ((cook_DBTime+timeTolerance) >= timeGap) )
+      chosenCandIdx <- unique( c(chosenCandIdx, chosenCandIdx+1) )
+      
       if(length(chosenCandIdx) >= 2){
         chosenCand <- cookCandLog[sort(chosenCandIdx),]
         
@@ -1026,76 +1064,221 @@ predict.forceRiceCooker_jp <- function (object, meta, apMargin = 50, rpMargin = 
         lumpSummary <- lumpSummary %>% filter(sum >= eff_size) 
         if(nrow(lumpSummary) != 0){
           lumpLog <- splitLumps %>% filter(lumpIdx %in% lumpSummary$lumpIdx)
+          # for pair annihilation
+          if (existWarm) if(meta$warm[["type"]] == 1) cookLog_forAnnihilation <- lumpLog
+
           
+          # energy estimation
+          estiOutput <- ldply(seq(nrow(lumpSummary)), function(rowIdx){
+            tmp_lumpIdx <- lumpSummary$lumpIdx[rowIdx]
+            tmp_LumpPattern <- lumpLog %>% filter(lumpIdx == tmp_lumpIdx)
+            return(energyEstimation_caseCook(data, metaHz, tmp_LumpPattern, meta$param[["proper_cookTime"]], cook_minTimeON))
+          })
+          # put sig fluc. num.: cbind(estiOutput, sigNum = rep(lumpSummary$sum, each = 2))
+          
+          # mark cook signal
+          summary_cookTime <- lumpSummary %>% mutate(cookTime = lump.start + dseconds(lump.duration/2)) %>% select(cookTime)
+          valid_cookLump <- estiOutput %>% mutate(validity = (SecON >= cook_minTimeON)) %>% bind_cols(data.frame(lumpIdx = rep(seq(nrow(summary_cookTime)), each = 2))) %>%
+            group_by(lumpIdx) %>% summarise(validity = any(validity), SecON = median(SecON), whON = median(whON), apON = median(apON)) %>% bind_cols(summary_cookTime)
+          
+          ### cook signals w/ proper energy consumption
+          if(any(valid_cookLump$validity == TRUE)){
+            proper_cookInfo <- valid_cookLump %>% filter(validity == TRUE)
+            cooking.start.timestamp <- floor_date(proper_cookInfo$cookTime, unit = "second")
+            cooking.start.idx <- which(answer.log$timestamp %in% cooking.start.timestamp)
+            cooking.on.idx <- unique(unlist(lapply( cooking.start.idx, function(x) x + (-round(cook_usageStartTime):(round(cook_usageEndTime)-1)) )))
+            ### avoid overflow of the idx
+            cooking.on.idx <- cooking.on.idx[(cooking.on.idx >= 1) & (cooking.on.idx <= nrow(answer.log)) ]
+            answer.log$p[cooking.on.idx] <- answer.log$p[cooking.on.idx] - (cook_usageWhON*3600/(cook_usageStartTime + cook_usageEndTime ))
+            # end
+          }
+
+          ### cook signals w/ minor energy consumption
+          if(any(valid_cookLump$validity == FALSE)){
+            proper_cookInfo <- valid_cookLump %>% filter(validity == FALSE) %>% mutate(cookTime = floor_date(cookTime, unit = "second"))
+            cooking.start.idx <- sapply(proper_cookInfo$cookTime, function(x) which(x == answer.log$timestamp) )
+            cooking.on.idx <- unique(unlist(mapply(function(x,sec) x + (-round(sec/2):(round(sec/2)-1)), cooking.start.idx, proper_cookInfo$SecON, SIMPLIFY = FALSE)))
+            tmp_estiAP <- proper_cookInfo %>% summarise(estiAP = median(proper_cookInfo$apON)) %>% .$estiAP
+            ### avoid overflow of the idx
+            cooking.on.idx <- cooking.on.idx[(cooking.on.idx >= 1) & (cooking.on.idx <= nrow(answer.log)) ]
+            answer.log$p[cooking.on.idx] <- answer.log$p[cooking.on.idx] - tmp_estiAP
+            # end
+          }
         }
       }
     }
-
-
-
   }
   
-  # search periodicity in signature level
-  major_pattern <- patterns %>% filter(h2 >= -max_watt) %>% filter(h2 <= -min_watt)
-  if( nrow(major_pattern) == 0 ){
-    print("There is no candidate for the major signals")
-    return(list())
-  } 
-  
-  major_pattern$delta <- -major_pattern$delta
-  
-  major_group_info <- detectGroup_riceCooker(data = major_pattern, resolution = group_searchIter, main.g.name = "delta", sub.g.name = "sub.delta", p_factor = group_periodicity,
-                                             q_factor = group_quantProb, med.time_min = group_medSec_min, med.time_max = group_medSec_max, group_size = effective_size)
-  
-  if (length(major_group_info) == 0) {
-    print("Group search to retrieve the major DB has failed.")
-    return(list())
-  }
-  
-  print("major groups:")
-  group_list <- cbind(major_group_info[[length(major_group_info)]], data.frame(orderNum = seq( length(major_group_info)-1 ) )) %>% arrange(desc(sum))
-  print(group_list)
-  
-  # examine candidates 1) lapply for each group; 2) lapply for each DB time
-  # for ( candIdx in 1:nrow(group_list) ) { print(candIdx)
-  candResult <- lapply(seq(nrow(group_list)), function(candIdx){
-    chosen_group <- major_group_info[[ group_list$orderNum[candIdx] ]] %>% arrange(start.timestamp)
-    time_diff <- difftime( tail(chosen_group$start.timestamp,-1), head(chosen_group$start.timestamp,-1), units='secs')
-    group_detail <- lapply(DB_majorSig$time, function(DB_time){ 
+  # warm signal search
+  if(existWarm){
+    
+    warm_DBTime <- meta$warm[["DB_TimeSec"]]
+    warm_type <- meta$warm[["type"]]
+    particleSize <- meta$param[["annihilation_particleLumpSize"]]
+    # set reduce
+    warmCandLog <- e_pattern %>% filter( h2 >= meta$warm[["min_ap.h2"]], h2 <= meta$warm[["max_ap.h2"]], 
+                                         sub.delta >= meta$warm[["min_rp.delta"]], sub.delta <= meta$warm[["max_rp.delta"]])
+    
+    if(nrow(warmCandLog) >= 2){
       
-      chosen_rows <- which( ( (DB_time-timeTolerance) <= time_diff) & ((DB_time+timeTolerance) >= time_diff))
-      chosen_rows <- unique( c(chosen_rows, chosen_rows+1) ) %>% sort() %>% chosen_group[.,]
-      if(nrow(chosen_rows) != 0) {
-        
-        # split the chosen rows into several lumps depending on time gap
-        splitInterval <- cumsum( c(TRUE, difftime( tail(chosen_rows$start.timestamp,-1),
-                                                   head(chosen_rows$start.timestamp,-1), units='secs') >= lump_timeGapThres))
-        splitLumps <- bind_cols(chosen_rows, data.frame(lumpIdx = splitInterval)) 
-        # splitLumps <- split.data.frame( chosen_rows, splitInterval) %>% bind_rows(.id = 'lumpIdx')
-        
-        # summarize information
-        lumpSummary <- ddply(splitLumps, .(lumpIdx), summarize, sum = length(start.timestamp), lump.start = min(start.timestamp), lump.end = max(end.timestamp), lump.duration = as.numeric(lump.end) - as.numeric(lump.start),
-                             min.t = min(diff(as.numeric(start.timestamp))), med.t = median(diff(as.numeric(start.timestamp))), max.t = max(diff(as.numeric(start.timestamp))), min.med.rate2 = quantile(diff(as.numeric(start.timestamp)), .05)/med.t, med.h1 = median(h1),
-                             min.d = min(delta), med.d = median(delta), max.d = max(delta), sd.d = sd(delta), med.sub.d = median(sub.delta), lost.sig.num = sum( pmax( round( diff(as.numeric(start.timestamp) ) / med.t ) -1 ,0)),
-                             lost.sig.rate =  lost.sig.num*100/(sum+lost.sig.num) )
-        
-        lumpSummary <- lumpSummary %>% filter(sum >= effective_size)
-        if(nrow(lumpSummary) != 0){
-          lumpLog <- splitLumps %>% filter( lumpIdx %in% lumpSummary$lumpIdx)
-          return(list(lumpSummary, lumpLog, DB_time, candIdx))
-        } else return(NULL)
+      refinedCandLog <- data.frame()
+      # step 1] consider time constraint 
+      if(warm_type == 0){
+        ### check time gap for each signal
+        timeGap <- difftime( tail(warmCandLog$start.timestamp,-1), head(warmCandLog$start.timestamp,-1), units='secs')
+        chosenCandIdx <- which( ( (warm_DBTime-timeTolerance) <= timeGap) & ((warm_DBTime+timeTolerance) >= timeGap) )
+        chosenCandIdx <- unique( c(chosenCandIdx, chosenCandIdx+1) )
+        if( length(chosenCandIdx) >= 2){
+          refinedCandLog <- warmCandLog[sort(chosenCandIdx),]
+        }
+      } else if(warm_type == 1){
+        refinedCandLog <- warmCandLog
       }
-      return(NULL) })
-    return(group_detail[!sapply(group_detail, is.null)])
-  })
+      
+      # step 2] identify lumps
+      if(nrow(refinedCandLog) != 0){
+        
+        splitInterval <- cumsum( c(TRUE, difftime( tail(refinedCandLog$start.timestamp,-1),
+                                                   head(refinedCandLog$start.timestamp,-1), units='secs') >= major_lumpGap))
+        splitLumps <- bind_cols(refinedCandLog, data.frame(lumpIdx = splitInterval))
+        lumpSummary <- ddply(splitLumps, .(lumpIdx), summarize, sum = length(start.timestamp))
+        if(warm_type == 0){
+          eff_lumpSize <- eff_size
+        } else if(warm_type == 1){
+          eff_lumpSize <- particleSize
+        }
+        lumpSummary <- lumpSummary %>% filter(sum >= eff_lumpSize)
+        refinedCandLog <- splitLumps %>% filter( lumpIdx %in% lumpSummary$lumpIdx)
+      }
+      
+      # step 3] signal extension
+      if( (nrow(refinedCandLog) != 0) && (length(sigGroupInfo) != 0) ){
+        
+        h2Min <- min(refinedCandLog$h2)
+        h2Max <- max(refinedCandLog$h2)
+        sub.deltaMin <- min(refinedCandLog$sub.delta)
+        sub.deltaMax <- max(refinedCandLog$sub.delta)
+        
+        extCand <- lapply(seq(length(sigGroupInfo) -1), function(x) return(sigGroupInfo[[x]] %>% filter(h2 >= h2Min, h2 <= h2Max, sub.delta >= sub.deltaMin, sub.delta <= sub.deltaMax)))
+        extCandNum <- sapply(extCand, function(x) return(nrow(x)))
+        
+        if(max(extCandNum) != 0){
+          chosenExtCand <- extCand[[which.max(extCandNum)]]
+          lump_timeIdx <- refinedCandLog %>% group_by(lumpIdx) %>% summarise(min_startIdx = min(start.idx), max_endIdx = max(end.idx))
+          newOutput <- apply(lump_timeIdx, 1, function(x) return(chosenExtCand %>% filter(start.idx >= as.numeric(x['min_startIdx']), end.idx <= as.numeric(x['max_endIdx'])) )) %>% bind_rows() %>% 
+                       ungroup() %>% select(-xDivision, -yDivision)
+          
+          finWarmLog <- refinedCandLog %>% select(-lumpIdx) %>% bind_rows(newOutput) 
+          refinedCandLog <- finWarmLog[!duplicated(finWarmLog$start.idx),] %>% arrange(start.idx)
+        }
+      }
+        
+      # step 4] remove cook signal for case of pair annihilation (if possible)
+      if( (nrow(refinedCandLog) != 0) && !is.null(cookLog_forAnnihilation)){
+        compareCookLog <- cookLog_forAnnihilation %>% ungroup() %>% select(start.idx, end.idx, start.timestamp, end.timestamp, h2, sub.delta)
+        compareWarmLog <- refinedCandLog %>% select(start.idx, end.idx, start.timestamp, end.timestamp, h2, sub.delta)
+        refinedCandLog <- dplyr::setdiff(compareWarmLog, compareCookLog)
+      }
+      
+      # step 5] insert signals (for results)
+      if(nrow(refinedCandLog) != 0){
+        
+        new_timestamp <- floor_date(refinedCandLog$start.timestamp, unit = "second")
+        warming.start.idx <- which(answer.log$timestamp %in% new_timestamp)
+        warming.on.idx <- unique(unlist(lapply( warming.start.idx, function(x) x + 0:(round(meta$warm[["usage_secON"]])-1) )))
+        # avoid overflow of the idx
+        warming.on.idx <- warming.on.idx[warming.on.idx <= nrow(answer.log)]
+        answer.log$p[warming.on.idx] <- answer.log$p[warming.on.idx] + meta$warm[["usage_watt"]] * usage_powerAdjust
+
+      }
+    }
+  }
   
-  
-  
-  
-  
-  
-  
-  
+  return(answer.log)
+}
+
+
+
+    # ### 3-2] refine signal
+    # if(!is.null(longCand)){
+    # 
+    #   refinedLog <- lapply(longCand, function(sigIdx){
+    #     lumpSummary <- major_SigInfo$candSummary[[sigIdx]]
+    # 
+    #     lumpLog <- major_SigInfo$candPattern[[sigIdx]]
+    #     h2Min <- min(lumpLog$h2)
+    #     h2Max <- max(lumpLog$h2)
+    #     lump_timeIdx <- lumpLog %>% group_by(lumpIdx) %>% summarise(min_startIdx = min(start.idx), max_endIdx = max(end.idx))
+    # 
+    #     reduced_entireLog <- major_SigInfo$wholePattern[[ major_SigInfo$candGroup[[sigIdx]] ]] %>% filter(h2 >= h2Min) %>% filter(h2 <= h2Max)
+    # 
+    #     
+    #     return( bind_rows(newOutput, .id = NULL) )
+    #   })
+    # 
+    #   idx_chosenCand <- which.max(sapply(refinedLog, nrow))
+    #   ID_warmSig <- longCand[idx_chosenCand]
+    #   refined_warmLog <- refinedLog[[idx_chosenCand]]
+    #   warmLumpNum <- nrow(lump_timeIdx)
+    #   # energy estimation (w/ original pattern log)
+    #   warmEnergy_Info <- energyEstimation_caseWarm(data, Hz, pattern = major_SigInfo$candPattern[[ID_warmSig]], thres = min_apThres)
+    # }
+    # 
+    # 
+    # 
+    # 
+    # 
+    # 
+    # 
+    # 
+    # 
+    # 
+    # 
+    # 
+    # 
+    # 
+    # 
+    # 
+    # 
+    # if(nrow(refinedAnnihilationLog) != 0) {
+    # 
+    # 
+    # 
+    #   # consider lump
+    #   if(nrow(refined_warmLog) != 0) {
+    # 
+    # 
+    # 
+    #     if(nrow(refined_warmLog) != 0){
+    #       ID_warmSig <- length(sigClass) + 1
+    #       flag_warmType <- 1
+    #       warmLumpNum <- nrow(lumpSummary)
+    #       # energy estimation (w/ original pattern log)
+    #       warmEnergy_Info <- energyEstimation_caseWarm(data, Hz, pattern = refined_warmLog, thres = min_apThres)
+    #     }
+    #   }
+    # }
+    
+
+
+  # # search periodicity in signature level
+  # major_pattern <- patterns %>% filter(h2 >= -max_watt) %>% filter(h2 <= -min_watt)
+  # if( nrow(major_pattern) == 0 ){
+  #   print("There is no candidate for the major signals")
+  #   return(list())
+  # } 
+  # 
+  # major_pattern$delta <- -major_pattern$delta
+  # 
+  # major_group_info <- detectGroup_riceCooker(data = major_pattern, resolution = group_searchIter, main.g.name = "delta", sub.g.name = "sub.delta", p_factor = group_periodicity,
+  #                                            q_factor = group_quantProb, med.time_min = group_medSec_min, med.time_max = group_medSec_max, group_size = effective_size)
+  # 
+  # if (length(major_group_info) == 0) {
+  #   print("Group search to retrieve the major DB has failed.")
+  #   return(list())
+  # }
+  # 
+
   
   
   ### usage paste start
@@ -1143,76 +1326,6 @@ predict.forceRiceCooker_jp <- function (object, meta, apMargin = 50, rpMargin = 
   #                                           floor_date(max(data$timestamp), unit = "second"), 'secs'))
   # answer.log <- data.frame( answer.log, p= rep(0,nrow(answer.log)), q= rep(0,nrow(answer.log)))
   
-  # cook
-  if(ID_cookSig != 0){
-    # insert cooking signals (for results)
-    summary_cookTime <- cookSummary %>% mutate(cookTime = lump.start + dseconds(lump.duration/2)) %>% select(cookTime)
-    valid_cookLump <- log_cookEnergy %>% mutate(validity = (SecON >= min_usageTime)) %>% bind_cols(data.frame(lumpIdx = rep(seq(nrow(summary_cookTime)), each = 2))) %>%
-      group_by(lumpIdx) %>% summarise(validity = any(validity), SecON = median(SecON), whON = median(whON), apON = median(apON)) %>% bind_cols(summary_cookTime)
-    
-    ### cook signals w/ proper energy consumption
-    if(any(valid_cookLump$validity == TRUE)){
-      proper_cookInfo <- valid_cookLump %>% filter(validity == TRUE)
-      cooking.start.timestamp <- floor_date(proper_cookInfo$cookTime, unit = "second")
-      cooking.start.idx <- which(answer.log$timestamp %in% cooking.start.timestamp)
-      cooking.on.idx <- unique(unlist(lapply( cooking.start.idx, function(x) x + (-round(cookEnergy$startTime):(round(cookEnergy$endTime)-1)) )))
-      ### avoid overflow of the idx
-      cooking.on.idx <- cooking.on.idx[(cooking.on.idx >= 1) & (cooking.on.idx <= nrow(answer.log)) ]
-      answer.log$p[cooking.on.idx] <- answer.log$p[cooking.on.idx] - (cookEnergy$whON*3600/(cookEnergy$startTime + cookEnergy$endTime ))
-      # end
-    }
-    
-    ### cook signals w/ minor energy consumption
-    if(any(valid_cookLump$validity == FALSE)){
-      proper_cookInfo <- valid_cookLump %>% filter(validity == FALSE) %>% mutate(cookTime = floor_date(cookTime, unit = "second"))
-      cooking.start.idx <- sapply(proper_cookInfo$cookTime, function(x) which(x == answer.log$timestamp) )
-      cooking.on.idx <- unique(unlist(mapply(function(x,sec) x + (-round(sec/2):(round(sec/2)-1)), cooking.start.idx, proper_cookInfo$SecON, SIMPLIFY = FALSE)))
-      tmp_estiAP <- proper_cookInfo %>% summarise(estiAP = median(proper_cookInfo$apON)) %>% .$estiAP
-      ### avoid overflow of the idx
-      cooking.on.idx <- cooking.on.idx[(cooking.on.idx >= 1) & (cooking.on.idx <= nrow(answer.log)) ]
-      answer.log$p[cooking.on.idx] <- answer.log$p[cooking.on.idx] - tmp_estiAP
-      # end
-    }
-    
-  }
-  
-  
-  # warm
-  if(ID_warmSig != 0){
-    # insert warming signals (for results)
-    new_timestamp <- floor_date(refined_warmLog$start.timestamp, unit = "second")
-    
-    warming.start.idx <- which(answer.log$timestamp %in% new_timestamp)
-    if (round(warmEnergy_Info$sec) != 0){
-      warming.on.idx <- unique(unlist(lapply( warming.start.idx, function(x) x + 0:(round(warmEnergy_Info$sec)-1) )))
-    }
-    
-    ### avoid overflow of the idx
-    warming.on.idx <- warming.on.idx[warming.on.idx <= nrow(answer.log)]
-    
-    if (round(warmEnergy_Info$sec) != 0){
-      
-      warming.usage_pwr <- warmEnergy_Info$watt
-    } 
-    
-    answer.log$p[warming.on.idx] <- answer.log$p[warming.on.idx] + warming.usage_pwr * 2
-    # end
-  }
-  
-  return(answer.log)
-  
-  ### usage paste end
-  
-  
-  
-  
-  
-  
-  
-  
-  
-  return(list(usage = answer.log, samplingRate = 1.)) # confidence = meta$reliability, count = cookCnt, 
-}
 
 
 
