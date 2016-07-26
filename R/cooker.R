@@ -390,7 +390,7 @@ detectGroup_riceCooker <- function(data, resolution, main.g.name, sub.g.name, p_
 
 sigOrchestration_riceCooker <- function(data, Hz, answer.log, major_SigInfo, major_DBInfo, thresTime, range_energyEsti, min_usageTime, min_apThres, annihilation_cookNumThres, annihilation_pattern,
                                         annihilation_spanSec, annihilation_apMinThres, annihilation_apMaxThres, annihilation_searchIter, annihilation_effSize, annihilation_medSec_min, 
-                                        annihilation_medSec_max, annihilation_thresProb, annihilation_coverageProb, lump_timeGapThres, annihilation_particleLumpSize){
+                                        annihilation_medSec_max, annihilation_thresProb, annihilation_maxApGap, annihilation_coverageProb, lump_timeGapThres, annihilation_particleLumpSize){
 
   if( length(major_SigInfo) == 0){
     print("detection failure: no major signal")
@@ -512,7 +512,7 @@ sigOrchestration_riceCooker <- function(data, Hz, answer.log, major_SigInfo, maj
       ### merge
       entireParticle <- bind_rows(particle_info, antiParticle_info) %>% arrange(start.timestamp)
       annihilationInfo <- detectGroup_pairAnnihilation(data = entireParticle, resolution = annihilation_searchIter, main.g.name = "delta", sub.g.name = "sub.delta", property.name = "particlePosition", 
-                                                       a_factor = annihilation_thresProb, med.time_min = annihilation_medSec_min, med.time_max = annihilation_medSec_max, group_size = annihilation_effSize)
+                                                       a_factor = annihilation_thresProb, AP_maxGap = annihilation_maxApGap, med.time_min = annihilation_medSec_min, med.time_max = annihilation_medSec_max, group_size = annihilation_effSize)
 
       if(length(annihilationInfo) != 0){
        
@@ -722,7 +722,7 @@ energyEstimation_caseWarm <- function(data, Hz, pattern, thres){
   return(data.frame(watt = wattResult, sec = med_sec) )
 }
 
-detectGroup_pairAnnihilation <- function(data, resolution, main.g.name, sub.g.name, property.name, a_factor, q_factor = .05, med.time_min, med.time_max, group_size){
+detectGroup_pairAnnihilation <- function(data, resolution, main.g.name, sub.g.name, property.name, a_factor, AP_maxGap, med.time_min, med.time_max, group_size){
 
   findGaps <- function(x,n){
     x <- sort(x)
@@ -739,14 +739,13 @@ detectGroup_pairAnnihilation <- function(data, resolution, main.g.name, sub.g.na
     data.frame( 
       'sum' = length(groupInfo$start.timestamp), 
       'min.t'  = min(tsDiff),
-      'min.t2' = quantile(tsDiff, q_factor),
       'med.t'  = median(tsDiff),
+      'min.h2' = min(groupInfo$h2),
+      'max.h2' = max(groupInfo$h2),
       'lost.sig.num' = sum( pmax( round(tsDiff / median(tsDiff)) -1 ,0)),
       'anti.particle' = nrow(colParticle %>% filter(. < 0)),
       'particle' = nrow(colParticle %>% filter(. >= 0)),
-      'lump.coverage' = length(unique(groupInfo$lumpIdx)),
-      'particle.min.t2' = quantile(unlist(colParticle), q_factor),
-      'particle.max.t2' = quantile(unlist(colParticle), 1-q_factor)
+      'lump.coverage' = length(unique(groupInfo$lumpIdx))
       )
   }
   
@@ -783,7 +782,6 @@ detectGroup_pairAnnihilation <- function(data, resolution, main.g.name, sub.g.na
       group.info <- o.list %>%
         do( summarize_particleInfo(., colName = property.name) ) %>%
         mutate( min.med.rate  = min.t/med.t, 
-                min.med.rate2 = min.t2/med.t, 
                 particle.prob = particle/sum)
       
       group.info <- merge( group.info, o.list %>% 
@@ -798,6 +796,7 @@ detectGroup_pairAnnihilation <- function(data, resolution, main.g.name, sub.g.na
       eff_group.info <- group.info %>%
         filter( med.t >= med.time_min ) %>%
         filter( med.t <= med.time_max ) %>%
+        filter( abs(min.h2 - max.h2) <= AP_maxGap ) %>%
         filter( particle.prob >= a_factor ) %>%
         filter( xDivision != 0 )
       
@@ -875,16 +874,20 @@ chooseRefinedCand <- function(annihilationInfo, entireCookLump, entirePattern, a
     chosen_group <- annihilationInfo[[ chosen_summary$orderNum ]]
 
     chosen_antiParticle <- chosen_group %>% filter(particlePosition < 0)
-    if(nrow(chosen_antiParticle) >= annihilation_particleLumpSize){
-      thres_removingCost <- chosen_summary$particle / chosen_summary$anti.particle
-      antiParticle_chkMetric <- chosen_antiParticle %>% rowwise() %>% do( compute_removingCost(df = ., summary = chosen_summary, group = chosen_group)) %>%
-                                bind_cols(chosen_antiParticle, .) %>% arrange(removingCost) %>% .[1,]
+    if(nrow(chosen_antiParticle) >= annihilation_particleLumpSize){ # not high quality information
+      tmp_antiParticle_chkMetric <- chosen_antiParticle %>% rowwise() %>% do( compute_removingCost(df = ., summary = chosen_summary, group = chosen_group)) %>%
+                                bind_cols(chosen_antiParticle, .) %>% arrange(removingCost)
+      antiParticle_chkMetric <- tmp_antiParticle_chkMetric %>% filter(removedAntiParticle >= (nrow(chosen_antiParticle)-annihilation_particleLumpSize) ) 
       
-      if(antiParticle_chkMetric$removingCost <= thres_removingCost){
-        cat("anti particle elimination at ", candIdx, "\n")
-        print(antiParticle_chkMetric)
-        return(antiParticle_reduction(df = antiParticle_chkMetric, summary = chosen_summary, group = chosen_group))
-      } 
+      if(nrow(antiParticle_chkMetric) != 0){
+        antiParticle_chkMetric <- antiParticle_chkMetric[1,]
+      } else{
+        maxRemoveNum <- max(tmp_antiParticle_chkMetric$removedAntiParticle)
+        antiParticle_chkMetric <- tmp_antiParticle_chkMetric[tmp_antiParticle_chkMetric$removedAntiParticle == maxRemoveNum, ] %>% arrange(removingCost) %>% .[1,]
+      }
+      cat("anti particle elimination at ", candIdx, "\n")
+      print(antiParticle_chkMetric)
+      return(antiParticle_reduction(df = antiParticle_chkMetric, summary = chosen_summary, group = chosen_group))
     }
     return(chosen_group)
   })
@@ -901,80 +904,59 @@ chooseRefinedCand <- function(annihilationInfo, entireCookLump, entirePattern, a
 
 }
 
-forceRiceCooker_jp <- function (data, prior_meta = NULL, Hz = 10){
+forceRiceCooker_jp <- function (data, prior_meta = NULL){
   
-  # options(scipen = 15)
+  # apply algorithm to each channel
+  ### channel 1
+  x.df <- data %>% filter(channel == 1) %>% arrange(timestamp)
+  meta1 <- riceCookerCore_jp(data = x.df, prior_meta = prior_meta)
+  if(!is.null(meta1)) meta1$channel <- 1
   
-  # major parameters
-  eff_size = 5
-  periodicity = 0.2
+  ### channel 2
+  x.df <- data %>% filter(channel == 2) %>% arrange(timestamp)
+  meta2 <- riceCookerCore_jp(data = x.df, prior_meta = prior_meta)
+  if(!is.null(meta2)) meta2$channel <- 2
   
-  # signal search: major case
-  search_iter <- 650 # increased by 50 due to the JPN site '10012085'
-  quantileProb <- 0.25
-  major_min_watt <- 250
-  major_max_watt <- 1600
-  major_medSec_min <- 10
-  major_medSec_max <- 600
-  major_lumpGap <- 3600
-  
-  # DB 
-  # flag - 0: cooking || 1: warming || 2: both (NOT USING YET!)
-  DB_major <- data.frame(time = c(15, 16, 20, 32, 45, 50, 60, 75, 128), 
-                         flag = c( 0,  2,  2,  1,  1,  1,  2,  1,   1))
-  DB_toleranceSec <- 0.4
-  
-  # signal orchestration
-  thres_timeDuration <- 3600 * 2
-  proper_cookTime <- 40 * 60
-  min_cookOn <- 5 * 60
-  ap_ignoreThres <- 5 
-  
-  # signal annihilation
-  annihilation_cookNumThres <- 2
-  annihilation_spanSec <- 3*3600
-  annihilation_thresProb <- 0.9
-  annihilation_apMinThres <- 50
-  annihilation_apMaxThres <- major_max_watt # set to 1600
-  annihilation_particleLumpSize <- 8 # might be larger than eff_size
-  annihilation_coverageProb <- 0.75
-  
-  #########################################################################
-  ### DetectPattern_1Hz_new:: cowork with SJLEE
-  e_pattern <- DetectPattern_1Hz_new(data, position = "end", main_type = "active", sub_type = "reactive", useConsistencyFlag = F)
-  #########################################################################
-  
-  majorSig_info <- sigSearch_majorCase( patterns = e_pattern, min_watt = major_min_watt, max_watt = major_max_watt, group_periodicity = periodicity, group_quantProb = quantileProb, 
-                                    group_searchIter = search_iter, group_medSec_min = major_medSec_min, group_medSec_max = major_medSec_max, effective_size = eff_size, 
-                                    lump_timeGapThres = major_lumpGap, timeTolerance = DB_toleranceSec, DB_majorSig = DB_major)
-  
-  validMeta <- sigOrchestration_riceCooker(data, Hz, answer.log, major_SigInfo = majorSig_info, major_DBInfo = DB_major, thresTime = thres_timeDuration, 
-                                           range_energyEsti = proper_cookTime, min_usageTime = min_cookOn, min_apThres = ap_ignoreThres, annihilation_cookNumThres, annihilation_pattern = e_pattern, 
-                                           annihilation_spanSec, annihilation_apMinThres, annihilation_apMaxThres, annihilation_searchIter = search_iter, annihilation_effSize = eff_size, annihilation_medSec_min = major_medSec_min,
-                                           annihilation_medSec_max = major_medSec_max, annihilation_thresProb, annihilation_coverageProb, lump_timeGapThres = major_lumpGap, annihilation_particleLumpSize)
-  
-  if (length(validMeta) == 0) {
-    print("no valid signal: reusing prior_meta")
+  # compare metas
+  if(is.null(meta1) && is.null(meta2)){
+    print("no rice cooker at home: reuse prior meta")
     return(prior_meta)
+  } else if(is.null(meta1) && !is.null(meta2)){
+    return(meta2)
+  } else if(!is.null(meta1) && is.null(meta2)){
+    return(meta1)
+  } else {
+    print("meta orchestration")
+    # step 1] examine cook signal
+    if(meta1$general[["Cook"]] && !meta2$general[["Cook"]]){
+      return(meta1)
+    } else if(!meta1$general[["Cook"]] && meta2$general[["Cook"]]){
+      return(meta2)
+    } else {
+      # step 2] examine warm signal
+      if(meta1$general[["Warm"]] && !meta2$general[["Warm"]]){
+        return(meta1)
+      } else if(!meta1$general[["Warm"]] && meta2$general[["Warm"]]){
+        return(meta2)
+      } else {
+        # step 3] examine cook lumps
+        if(meta1$general[["Cook"]]){ # cook signals exist
+          
+          if(meta1$cook[['minFlucs_properLump']] >= meta2$cook[['minFlucs_properLump']]){ # meta2$cook[["properLumps"]]
+            return(meta1)
+          } else return(meta2)
+        } else { # warm signals exist
+          if(meta1$warm[["lumps"]] >= meta2$warm[["lumps"]]){
+            return(meta1)
+          } else return(meta2)
+        }
+      }
+    }
   }
-  
-  # parameter setup
-  validMeta$param <- c("Hz" = Hz, "eff_size" = eff_size, "periodicity" = periodicity, "search_iter" = search_iter, "quantileProb" = quantileProb, "major_min_watt" = major_min_watt,
-                       "major_max_watt" = major_max_watt, "major_medSec_min" = major_medSec_min, "major_medSec_max" = major_medSec_max, "DB_toleranceSec" = DB_toleranceSec, 
-                       "major_lumpGap" = major_lumpGap, "proper_cookTime" = proper_cookTime, "min_cookOn" = min_cookOn, "annihilation_particleLumpSize" = annihilation_particleLumpSize)
-  
-  validMeta$DBTime <- DB_major$time
-  
-  # compute reliability
-  metaReliability <- 0.2
-  if(validMeta$general[["Cook"]] == TRUE) metaReliability <- metaReliability + 0.4
-  if(validMeta$general[["Warm"]] == TRUE) metaReliability <- metaReliability + 0.2
-  validMeta$reliability <- metaReliability
-
-  return(validMeta)
 }
+
   
-predict.forceRiceCooker_jp <- function (object, meta, apMargin = 50, rpMargin = 20, usage_powerAdjust = 2) {
+predict.forceRiceCooker_jp <- function(object, meta, apMargin = 50, rpMargin = 20, usage_powerAdjust = 2) {
   data <- object
 
   # options(scipen = 15)
@@ -984,7 +966,9 @@ predict.forceRiceCooker_jp <- function (object, meta, apMargin = 50, rpMargin = 
   cookCnt <- 0
   cookLog_forAnnihilation <- NULL
   
-  if(length(meta) == 0) return(list(usage = answer.log, confidence = 0, count = cookCnt, samplingRate = 1.))
+  if(length(meta) == 0) return(answer.log) # list(usage = answer.log, confidence = 0, count = cookCnt, samplingRate = 1.)
+  
+  data <- data %>% filter(channel == meta$channel) %>% arrange(timestamp)
   
   # parameters
   existCook <- meta$general[["Cook"]]
@@ -1197,7 +1181,88 @@ predict.forceRiceCooker_jp <- function (object, meta, apMargin = 50, rpMargin = 
   return(answer.log)
 }
 
-
+riceCookerCore_jp <- function (data, prior_meta = NULL, Hz = 10){
+  
+  # options(scipen = 15)
+  
+  # major parameters
+  eff_size = 7
+  periodicity = 0.2
+  # min_cookFluc = 9
+  
+  # signal search: major case
+  search_iter <- 650 # increased by 50 due to the JPN site '10012085'
+  quantileProb <- 0.25
+  major_min_watt <- 250
+  major_max_watt <- 1600
+  major_medSec_min <- 10
+  major_medSec_max <- 600
+  major_lumpGap <- 3600
+  
+  # DB 
+  # flag - 0: cooking || 1: warming || 2: both (NOT USING YET!)
+  DB_major <- data.frame(time = c(15, 16, 20, 32, 45, 50, 60, 75, 128), 
+                         flag = c( 0,  2,  2,  1,  1,  1,  2,  1,   1))
+  DB_toleranceSec <- 0.4
+  
+  # signal orchestration
+  thres_timeDuration <- 3600 * 2
+  proper_cookTime <- 40 * 60
+  min_cookOn <- 6 * 60
+  ap_ignoreThres <- 5 
+  
+  # signal annihilation
+  annihilation_cookNumThres <- 2
+  annihilation_spanSec <- 3*3600
+  annihilation_thresProb <- 0.9
+  annihilation_maxApGap <- 300 # set loosely 
+  annihilation_apMinThres <- 50
+  annihilation_apMaxThres <- major_max_watt # set to 1600
+  annihilation_particleLumpSize <- 8 # might be larger than eff_size
+  annihilation_coverageProb <- 0.75
+  
+  #########################################################################
+  ### DetectPattern_1Hz_new:: cowork with SJLEE
+  e_pattern <- DetectPattern_1Hz_new(data, position = "end", main_type = "active", sub_type = "reactive", useConsistencyFlag = F)
+  #########################################################################
+  
+  majorSig_info <- sigSearch_majorCase( patterns = e_pattern, min_watt = major_min_watt, max_watt = major_max_watt, group_periodicity = periodicity, group_quantProb = quantileProb, 
+                                        group_searchIter = search_iter, group_medSec_min = major_medSec_min, group_medSec_max = major_medSec_max, effective_size = eff_size, 
+                                        lump_timeGapThres = major_lumpGap, timeTolerance = DB_toleranceSec, DB_majorSig = DB_major)
+  
+  validMeta <- sigOrchestration_riceCooker(data, Hz, answer.log, major_SigInfo = majorSig_info, major_DBInfo = DB_major, thresTime = thres_timeDuration, 
+                                           range_energyEsti = proper_cookTime, min_usageTime = min_cookOn, min_apThres = ap_ignoreThres, annihilation_cookNumThres, annihilation_pattern = e_pattern, 
+                                           annihilation_spanSec, annihilation_apMinThres, annihilation_apMaxThres, annihilation_searchIter = search_iter, annihilation_effSize = eff_size, annihilation_medSec_min = major_medSec_min,
+                                           annihilation_medSec_max = major_medSec_max, annihilation_thresProb, annihilation_maxApGap, annihilation_coverageProb, lump_timeGapThres = major_lumpGap, annihilation_particleLumpSize)
+  
+  if (length(validMeta) == 0) {
+    print("no valid signal: reusing prior_meta")
+    return(prior_meta)
+  }
+  
+  # if (validMeta$general[["Cook"]]){
+  #   if(validMeta$cook[["minFlucs_properLump"]] < min_cookFluc){
+  #     print("too small cook fluctuation: reusing prior_meta")
+  #     return(prior_meta)
+  #   }
+  # }
+  
+  
+  # parameter setup
+  validMeta$param <- c("Hz" = Hz, "eff_size" = eff_size, "periodicity" = periodicity, "search_iter" = search_iter, "quantileProb" = quantileProb, "major_min_watt" = major_min_watt,
+                       "major_max_watt" = major_max_watt, "major_medSec_min" = major_medSec_min, "major_medSec_max" = major_medSec_max, "DB_toleranceSec" = DB_toleranceSec, 
+                       "major_lumpGap" = major_lumpGap, "proper_cookTime" = proper_cookTime, "min_cookOn" = min_cookOn, "annihilation_particleLumpSize" = annihilation_particleLumpSize)
+  
+  validMeta$DBTime <- DB_major$time
+  
+  # compute reliability
+  metaReliability <- 0.2
+  if(validMeta$general[["Cook"]] == TRUE) metaReliability <- metaReliability + 0.4
+  if(validMeta$general[["Warm"]] == TRUE) metaReliability <- metaReliability + 0.2
+  validMeta$reliability <- metaReliability
+  
+  return(validMeta)
+}
 
     # ### 3-2] refine signal
     # if(!is.null(longCand)){
