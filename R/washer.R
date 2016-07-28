@@ -432,6 +432,8 @@ Add_washerReliability <- function(data, inputInfo) {
   
   fit <- inputInfo
   
+  if (length(fit$startIndex) == 0) 
+    return(0.5)
   if (is.na(fit$startIndex))
     return(0.5)
   
@@ -507,6 +509,45 @@ Add_washerReliability <- function(data, inputInfo) {
   return(reliability)
   
 }
+
+######################
+# actual realization
+forceWasher_jp <- function(X, debug = FALSE, samplingRate = 10){
+  
+  X1 <- X %>% filter(channel == 1) %>% arrange(timestamp)
+  meta1 <- generate.meta.washer(X = X, debug = debug, samplingRate = samplingRate)
+  X2 <- X %>% filter(channel == 2) %>% arrange(timestamp)
+  meta2 <- generate.meta.washer(X = X, debug = debug, samplingRate = samplingRate)
+  
+  meta <- list()
+  meta$ch1 <- meta1
+  meta$ch2 <- meta2
+  return(meta)
+  
+} 
+
+# actual realization
+predict.forceWasher_jp <- function(meta, data){
+  
+  data1 <- data %>% filter(channel == 1) %>% arrange(timestamp)
+  meta1 <- meta$ch1
+  nilm.result1 <- predict.washer(meta = meta1, data = data1)
+  colnames(nilm.result1$usage) <- c("timestamp", "p1", "q1")
+  
+  data2 <- data %>% filter(channel == 2) %>% arrange(timestamp)
+  meta2 <- meta$ch2
+  nilm.result2 <- predict.washer(meta = meta2, data = data2)
+  colnames(nilm.result2$usage) <- c("timestamp", "p2", "q2")
+  
+  tmpResult <- full_join(nilm.result1$usage, nilm.result2$usage, by = "timestamp")
+
+  result <- list()
+  result$usage <- data.frame(timestamp = tmpResult$timestamp, p = rowSums(tmpResult %>% select(p1,p2), na.rm = TRUE), 
+                             q = rowSums(tmpResult %>% select(q1,q2), na.rm = TRUE)) %>% arrange(timestamp)
+  
+  return(result)
+} 
+
 
 
 

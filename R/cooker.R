@@ -345,7 +345,7 @@ detectGroup_riceCooker <- function(data, resolution, main.g.name, sub.g.name, p_
                              summarise_each_( funs(median), c('h1','delta','sub.delta') )) %>%
         dplyr::rename( med.h1 = h1, med.d = delta, med.sub.d = sub.delta ) %>%
         mutate( lost.sig.rate =  lost.sig.num*100/(sum+lost.sig.num) )
-    }
+    } else group.info <- data.frame()
     
     ### effective group (conservative search by default)
     if (nrow(group.info) > 0){
@@ -788,7 +788,7 @@ detectGroup_pairAnnihilation <- function(data, resolution, main.g.name, sub.g.na
                              summarise_each_( funs(median), c('h1','delta','sub.delta') )) %>%
         dplyr::rename( med.h1 = h1, med.d = delta, med.sub.d = sub.delta ) %>%
         mutate( lost.sig.rate =  lost.sig.num*100/(sum+lost.sig.num) )
-    }
+    } else group.info <- data.frame()
     
     ### effective group (conservative search by default)
     if (nrow(group.info) > 0){
