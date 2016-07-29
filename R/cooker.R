@@ -61,143 +61,6 @@ generate.PatternScan.meta.ricecooker_JPN <- function (data, Hz, eff_size = 5, pe
 
   
   return(validInfo)
-
-
-
-  
-
-  
-  annihilation_cookNumThres
-  annihilation_coverageProb
-  
-  
-    cooking.max_t.sec <- 40*60
-    cooking.min_fluc.num <- 3
-    
-    CDB_tolerance <- .02 # 2%
-    
-    c.lump_eff_size <- 4
-
-  # tmp_param
-  eff_group_size = 40
-  thres_ap.h = 15
-  thres_rp.delta = 20
-  
-  # warming mode search
-  w.thres_ap.max <- 170
-  
-  # time parameter
-  if (nation == 'KOR') w.med_sec.min <- 10 else if (nation == 'JPN') w.med_sec.min <- 2 
-  w.med_sec.max <- 240
-  
-  # w.lump (basic parameters)
-  w.lump.gap_sec.max <- 270
-  w.lump.med_sec.margin <- 1  
-  
-  # w.lump (candidate DB)
-  if (nation == 'KOR') {
-    w.cand.DB <- data.frame(med.t = c(16, 30, 32, 48, 64, 80, 96, 112, 128, 144, 160), #30 is from the brand 'Coochan'
-                            min.med.rate2 = c(1, 1, 1/2, 1/3, 1/4, 1/5, 1/6, 1/7, 1/8, 1/9, 1/10 ) )
-    # magnitude DB (off the record): 1(106, 70, (91.5, 103.5), 42)
-    # magnitude DB (off the record): 2(40.5), 3(100), 4(60)
-    
-  } else if (nation == 'JPN') {
-    w.cand.DB <- data.frame(med.t = c(4, 16, 32, 48), 
-                            min.med.rate2 = c(1, 1, 1/2, 1/3) )
-    w.cand.extDB <- data.frame(med.t = c(25, 50, 50, 75, 75, 75, 100, 100, 100), 
-                               min.med.rate2 = c(1, 1, 1/2, 2/3, 1/3, 1/5, 1, 3/4, 1/2) )
-  }
-  
-  
-  DB_tolerance <- .02 # 2%
-  DB_rate_quantile <- .08 # 8%
-  
-  DB_timespan <- .1 # compared to maximum duration
-  
-  
-  # cooking mode search
-  if (nation == 'KOR') cooking.min_watt <- 750 else if (nation == 'JPN') cooking.min_watt <- 250
-  cooking.max_watt <- 1600
-  cooking.min_t.sec <- 7*60
-  cooking.max_t.sec <- 40*60
-  cooking.min_fluc.num <- 0
-  
-  # c.lump (basic parameters)
-  c.lump.gap_sec.max <- 3600
-  c.lump.med_sec.margin <- 0.0625 # 1/16 : In case of 16 sec, the margin is 1 sec.
-  
-  # cooking repetition DB
-  if (nation == 'KOR') {
-    c.cand.DB <- data.frame(med.t = c(16, 32))
-  } else if (nation == 'JPN') {
-    c.cand.DB <- data.frame(med.t = c(15, 16, 60))
-  }
-  
-  CDB_tolerance <- .02 # 2%
-  
-  # connection between warming & cooking
-  wnc.forward.time_diff.max_hr <- 4
-  wnc.backward.time_diff.max_hr <- 0.5
-  lump_merge.max_hr <- 1/3
-  
-  
-  # cooking mode refine
-  margin_sub.delta <- 20
-  margin_delta <- 50 # watt
-  margin_sec <- 120*60 #second
-  
-  # cooking.med_watt <- 1200
-  
-  # warming & cooking signal search (in parallel)
-  w.pattern.s <- DetectPattern_1Hz_new(data, position = "start", main_type = "active", sub_type = "reactive", useConsistencyFlag = F)
-  
-  warm.info_low <- parallel_warmSig_search_15Hz(data, w.pattern.s, ap_h1_min = thres_ap.h, ap_h1_max = w.thres_ap.max, ap_delta_min = thres_ap.h, ap_delta_max = w.thres_ap.max,
-                                                rp_delta_thres = thres_rp.delta, main.g.name = "h1", sub.g.name = "delta", periodicity, search_iter, w.med_sec.min, w.med_sec.max,
-                                                eff_size, eff_group_size, w.lump.gap_sec.max, w.lump.med_sec.margin, w.cand.DB, DB_tolerance, DB_rate_quantile, DB_timespan)
-  # CAUTION!!!
-  # warm.info_low <- list()
-  
-  warm.info_high <- list()
-  if (!any(unlist(warm.info_low$type) > 0)){
-    
-    if (nation == 'KOR'){
-      warm.info_high <- parallel_warmSig_search_15Hz(data, w.pattern.s, ap_h1_min = w.thres_ap.max, ap_h1_max = cooking.min_watt, ap_delta_min = -Inf, ap_delta_max = Inf,
-                                                     rp_delta_thres = Inf, main.g.name = "h1", sub.g.name = "sub.delta", periodicity, search_iter, w.med_sec.min, w.med_sec.max, 
-                                                     eff_size, eff_group_size, w.lump.gap_sec.max, w.lump.med_sec.margin, w.cand.DB, DB_tolerance, DB_rate_quantile, DB_timespan)
-      
-    } else if (nation == 'JPN'){
-      JPN_w.thres_ap.extMax <- 1000
-      w.cand.DB <- w.cand.extDB
-      warm.info_high <- parallel_warmSig_search_15Hz(data, w.pattern.s, ap_h1_min = w.thres_ap.max, ap_h1_max = JPN_w.thres_ap.extMax, ap_delta_min = -Inf, ap_delta_max = Inf,
-                                                     rp_delta_thres = Inf, main.g.name = "h1", sub.g.name = "sub.delta", periodicity, search_iter, w.med_sec.min, w.med_sec.max, 
-                                                     eff_size, eff_group_size, w.lump.gap_sec.max, w.lump.med_sec.margin, w.cand.DB, DB_tolerance, DB_rate_quantile, DB_timespan)
-    }
-    
-  }
-  
-  cook.info <- parallel_cookSig_search_15Hz(data, cooking.min_watt, cooking.max_watt, cooking.max_t.sec, cooking.min_fluc.num, periodicity,
-                                            search_iter, c.med_sec.min = w.med_sec.min, c.med_sec.max = w.med_sec.max, eff_size, c.lump.gap_sec.max,
-                                            c.lump.med_sec.margin, c.cand.DB, CDB_tolerance)
-  
-  valid.info <- sig.Orchestration_RC_15Hz(data, warm.info_low, warm.info_high, cook.info, w.cand.DB, c.cand.DB, DB_timespan,
-                                          cooking.forward_search = wnc.forward.time_diff.max_hr, cooking.backward_search = wnc.backward.time_diff.max_hr,
-                                          lump_merge = lump_merge.max_hr, cooking.min_sec = cooking.min_t.sec,
-                                          margin_sub.delta, margin_delta, margin_sec)
-  
-  if (length(valid.info) == 0) {
-    print("Valid signal search for a rice cooker has failed.")
-    return(list())
-  }
-  
-  # make parameter group to return
-  parameters <- c('eff_size' = eff_size, 'thres_ap.h' = thres_ap.h, 'thres_rp.delta' = thres_rp.delta, 'w.lump.gap_sec.max' = w.lump.gap_sec.max,
-                  'w.lump.med_sec.margin' = w.lump.med_sec.margin, 'c.max_t.sec' = cooking.max_t.sec, 'c.lump.gap_sec.max' = c.lump.gap_sec.max,
-                  'c.lump.med_sec.margin' = c.lump.med_sec.margin, 'c.lump_merge.max_hr' = lump_merge.max_hr, 'r.margin_sub.delta' = margin_sub.delta,
-                  'r.margin_delta' = margin_delta, 'r.margin_sec' = margin_sec)
-  
-  # JSON result
-  return(JSON_result_15Hz(data, information = valid.info, ap_thres = thres_ap.h, min_cook.time = cooking.min_t.sec, parameters, 
-                          warm_DB_time = w.cand.DB$med.t))
   
 }
 
@@ -438,7 +301,10 @@ sigOrchestration_riceCooker <- function(data, Hz, answer.log, major_SigInfo, maj
       
       properUsage <- energyData %>% filter(SecON >= min_usageTime)
       if(nrow(properUsage) == 0) return(data.frame(sigNum_org = 0,sigNum_proper = 0,nRow_org = 0,nRow_proper = 0) ) else{
-        return(data.frame(sigNum_org = min(energyData$sigNum), sigNum_proper = min(properUsage$sigNum), nRow_org = nrow(energyData)/2, nRow_proper = nrow(properUsage)/2) )
+        return(data.frame(sigNum_org = min(energyData$sigNum), sigNum_proper = min(properUsage$sigNum), LumpNum_org = nrow(energyData),
+                          LumpNum_proper = nrow(properUsage), sigNum_max = max(properUsage$sigNum), 
+                          sigNum_min = min(properUsage$sigNum), secON_median = median(properUsage$SecON), secON_sd = sd(properUsage$SecON), whON_median = median(properUsage$whON), 
+                          nRow_org = nrow(energyData)/2, nRow_proper = nrow(properUsage)/2) )
       }
     })
 
@@ -454,7 +320,6 @@ sigOrchestration_riceCooker <- function(data, Hz, answer.log, major_SigInfo, maj
     } else {
       tmp_ID <- which.max(candMetric)
       proper_lumpNum <- validMetric$nRow_proper[tmp_ID]
-      proper_minSigNum <- validMetric$sigNum_proper[tmp_ID]   
       ID_cookSig <- shortCand[tmp_ID]
       cookEnergy <- energyEsti[[tmp_ID]] %>% filter(SecON >= min_usageTime) %>% 
                     summarise(startTime = median(startTime), endTime = median(endTime), SecON = median(SecON), whON = median(whON), apON = median(apON), minSigNum = min(sigNum))
@@ -462,7 +327,6 @@ sigOrchestration_riceCooker <- function(data, Hz, answer.log, major_SigInfo, maj
       # to split the cook signals into two categories (later in consumption output)
       cookSummary <- major_SigInfo$candSummary[[ID_cookSig]]
       cookActLog <- major_SigInfo$candPattern[[ID_cookSig]]
-      log_cookEnergy <-energyEsti[[tmp_ID]]
     }
   }
 
