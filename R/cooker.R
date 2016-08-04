@@ -1055,18 +1055,18 @@ riceCookerCore_jp <- function (data, prior_meta = NULL, Hz = 10){
   # min_cookFluc = 9
   
   # signal search: major case
-  search_iter <- 650 # increased by 50 due to the JPN site '10012085'
+  search_iter <- 650 # increased by 50 due to the JPN site '10012085'JUNE DATA
   quantileProb <- 0.25
   major_min_watt <- 250
-  major_max_watt <- 1600
+  major_max_watt <- 1350
   major_medSec_min <- 10
-  major_medSec_max <- 600
+  major_medSec_max <- 700 # 600 -> 700 for SITE NO. 10012078, JULY DATA 
   major_lumpGap <- 3600
   
   # DB 
   # flag - 0: cooking || 1: warming || 2: both (NOT USING YET!)
   DB_major <- data.frame(time = c(15, 16, 20, 32, 45, 50, 60, 75, 128), 
-                         flag = c( 0,  2,  2,  1,  1,  1,  2,  1,   1))
+                         flag = c( 0,  2,  2,  1,  1,  1,  1,  1,   1))
   DB_toleranceSec <- 0.4
   
   # signal orchestration
